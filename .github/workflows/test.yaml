@@ -1,6 +1,7 @@
 name: Release Registry
 
 permissions:
+  contents: read
   packages: write
 
 on:
@@ -34,9 +35,8 @@ jobs:
       registry_image: "ghcr.io/${{ steps.repository_owner.outputs.lowercase }}/registry"
 
   publish-registry-image:
+    name: Build and publish Docker package
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
     needs: [ prepare ]
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
