@@ -173,7 +173,7 @@ jobs:
         id: set_tags
         shell: bash
         run: |
-          GITHUB_SHORT_SHA=${GITHUB:0:7}
+          GITHUB_SHORT_SHA=${GITHUB_SHA:0:7}
           TAGS=$({
             echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ github.sha }}";
             echo "-t ${{ needs.prepare.outputs.registry_image }}:${GITHUB_SHORT_SHA}";
