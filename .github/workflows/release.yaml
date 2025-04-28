@@ -166,7 +166,7 @@ jobs:
           TAGS=$({
             echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ github.sha }}";
             echo "-t ${{ needs.prepare.outputs.registry_image }}:${GITHUB_SHORT_SHA}";
-            echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ needs.prepare.outputs.version }}";
+            echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ needs.prepare.outputs.registry_version }}";
             if [[ "${{ needs.prepare.outputs.version }}" != *"-"* ]]; then
               echo "-t ${{ needs.prepare.outputs.registry_image }}:latest";
             fi;
@@ -181,4 +181,4 @@ jobs:
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ needs.prepare.outputs.registry_image }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ${{ needs.prepare.outputs.registry_image }}:${{ needs.prepare.outputs.registry_version }}
