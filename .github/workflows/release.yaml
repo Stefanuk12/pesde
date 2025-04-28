@@ -173,9 +173,10 @@ jobs:
         id: set_tags
         shell: bash
         run: |
-          TAGS=$( {
+          GITHUB_SHORT_SHA=${GITHUB:0:7}
+          TAGS=$({
             echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ github.sha }}";
-            echo "-t ${{ needs.prepare.outputs.registry_image }}:$GITHUB_SHA:0:7}";
+            echo "-t ${{ needs.prepare.outputs.registry_image }}:${GITHUB_SHORT_SHA}";
             echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ needs.prepare.outputs.version }}";
             if [[ "${{ needs.prepare.outputs.version }}" != *"-"* ]]; then
               echo "-t ${{ needs.prepare.outputs.registry_image }}:latest";
