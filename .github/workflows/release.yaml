@@ -186,7 +186,7 @@ jobs:
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         run: |
-          docker buildx imagetools create ${{ steps.set_tags.outputs.tags }} $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          docker buildx imagetools create ${{ steps.set_tags.outputs.tags }} \
             $(printf '${{ needs.prepare.outputs.registry_image }}@sha256:%s ' *)
 
       - name: Inspect image
