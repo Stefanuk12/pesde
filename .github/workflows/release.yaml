@@ -11,22 +11,46 @@ jobs:
     name: Prepare
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.extract_version.outputs.VERSION }}
+      version: ${{ steps.extract_version.outputs.value }}
+      registry_version: ${{ steps.extract_registry_version.outputs.value }}
+      registry_image: "ghcr.io/${{ steps.repository_owner.outputs.lowercase }}/registry"
+      registry_published: ${{ steps.registry_published.outputs.tag || 'not found' }}
       found: ${{ steps.ensure_not_published.outputs.FOUND }}
     steps:
       - uses: actions/checkout@v4
-      - name: Extract version
-        id: extract_version
-        shell: bash
-        run: |
-          VERSION=$(echo ${{ github.ref_name }} | cut -d'+' -f1 | cut -c 2-)
-          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Extract version
+        uses: SebRollen/toml-action@v1.0.2
+        id: extract_version
+        with:
+          file: "./Cargo.toml"
+          field: "package.version" 
+
+      - name: Extract registry version
+        uses: SebRollen/toml-action@v1.0.2
+        id: extract_registry_version
+        with:
+          file: "./registry/Cargo.toml"
+          field: "package.version"
+
+      - name: Lowercase repository owner
+        uses: ASzc/change-string-case-action@v6
+        id: repository_owner
+        with:
+          string: ${{ github.repository_owner }}
+
+      - name: Get Docker image publish status
+        uses: tyriis/docker-image-tag-exists@v2.1.0
+        id: registry_published
+        continue-on-error: true
+        with:
+          registry: ghcr.io
+          repository: "${{ steps.repository_owner.outputs.lowercase }}/registry"
+          tag: ${{ steps.extract_registry_version.outputs.value }}
+  
       - name: Ensure not published
         id: ensure_not_published
         shell: bash
-        env:
-          VERSION: ${{ steps.extract_version.outputs.VERSION }}
         run: |          
           CRATE_NAME="${{ env.CRATE_NAME }}"
           if [ ${#CRATE_NAME} -eq 1 ]; then
@@ -39,114 +63,121 @@ jobs:
             DIR="${CRATE_NAME:0:2}/${CRATE_NAME:2:2}"
           fi
 
-          FOUND=$(curl -sSL --fail-with-body "https://index.crates.io/$DIR/${{ env.CRATE_NAME }}" | jq -s 'any(.[]; .vers == "${{ env.VERSION }}")')
+          FOUND=$(curl -sSL --fail-with-body "https://index.crates.io/$DIR/${{ env.CRATE_NAME }}" | jq -s 'any(.[]; .vers == "${{ steps.extract_version.outputs.value }}")')
           echo "FOUND=$FOUND" >> "$GITHUB_OUTPUT"
 
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            host: linux
-            arch: x86_64
-            target: x86_64-unknown-linux-gnu
-
-          - os: ubuntu-24.04-arm
-            host: linux
-            arch: aarch64
-            target: aarch64-unknown-linux-gnu
-
-          - os: windows-latest
-            host: windows
-            arch: x86_64
-            target: x86_64-pc-windows-msvc
-
-          - os: macos-13
-            host: macos
-            arch: x86_64
-            target: x86_64-apple-darwin
-
-          - os: macos-latest
-            host: macos
-            arch: aarch64
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    name: Build for ${{ matrix.host }}-${{ matrix.arch }}
+  build-registry-image:
+    name: Build Docker image
+    runs-on: ubuntu-latest
     needs: [ prepare ]
-    if: ${{ needs.prepare.outputs.found == 'false' }}
-    env:
-      VERSION: ${{ needs.prepare.outputs.version }}
+    if: ${{ needs.prepare.outputs.registry_published == 'not found' }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Set env
-        shell: bash
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Prepare
         run: |
-          ARCHIVE_NAME=${{ env.BIN_NAME }}-${{ env.VERSION }}-${{ matrix.host }}-${{ matrix.arch }}
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
 
-          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.registry_image }}
 
-      - name: Install OS dependencies
-        if: ${{ matrix.host == 'linux' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install libdbus-1-dev pkg-config
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: https://ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build
-        run: cargo build --bins --all-features --release --target ${{ matrix.target }} --locked
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Archive
-        shell: bash
-        run: |
-          if [ ${{ matrix.host }} = "windows" ]; then
-            mv target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe ${{ env.BIN_NAME }}.exe
-            7z a ${{ env.ARCHIVE_NAME }}.zip ${{ env.BIN_NAME }}.exe
-          else
-            mv target/${{ matrix.target }}/release/${{ env.BIN_NAME }} ${{ env.BIN_NAME }}
-            zip -r ${{ env.ARCHIVE_NAME }}.zip ${{ env.BIN_NAME }}
-          fi
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+  
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ needs.prepare.outputs.registry_image }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
-      - name: Upload zip artifact
+      - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARCHIVE_NAME }}.zip
-          path: ${{ env.ARCHIVE_NAME }}.zip
-
-  publish:
-    name: Publish to crates.io
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+  
+  publish-registry-image:
     runs-on: ubuntu-latest
-    needs: [ build ]
+    needs:
+      - prepare
+      - build-registry-image
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Publish
-        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }} --allow-dirty --locked
-
-  create_release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: read
-    needs: [ prepare, publish ]
-    env:
-      VERSION: ${{ needs.prepare.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
+      - name: Download digests
+        uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
           merge-multiple: true
 
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ github.ref_name }}
-          name: v${{ env.VERSION }}
-          draft: true
-          prerelease: ${{ startsWith(env.VERSION, '0') }}
-          files: artifacts/*
+          registry: https://ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.registry_image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Set Tags
+        id: set_tags
+        shell: bash
+        run: |
+          TAGS=$( {
+            echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ github.sha }}";
+            echo "-t ${{ needs.prepare.outputs.registry_image }}:${${{ github.sha }}:0:7}";
+            echo "-t ${{ needs.prepare.outputs.registry_image }}:${{ needs.prepare.outputs.version }}";
+            if [[ "${{ needs.prepare.outputs.version }}" != *"-"* ]]; then
+              echo "-t ${{ needs.prepare.outputs.registry_image }}:latest";
+            fi;
+          } | paste -sd " " -)
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create ${{ steps.set_tags.outputs.tags }} $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ needs.prepare.outputs.registry_image }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ needs.prepare.outputs.registry_image }}:${{ steps.meta.outputs.version }}
